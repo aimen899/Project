@@ -1,8 +1,8 @@
 # Lab Project: Terraform + Ansible - Nginx Frontend with HTTPD Backends
 
 ## Student Information
-- Name: [Your Name]
-- Roll Number: [Your Roll Number]
+- Name: Aimen Hafeez
+- Roll Number: 2023-BSE-002
 
 ## Architecture Overview
 This project implements a highly available web architecture with:
