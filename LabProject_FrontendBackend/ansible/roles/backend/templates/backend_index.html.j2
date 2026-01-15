@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Backend {{ inventory_hostname }}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background-color: #f0f0f0;
+    }
+    .container {
+      background-color: white;
+      padding: 30px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      border-bottom: 3px solid #007bff;
+      padding-bottom: 10px;
+    }
+    .info {
+      margin: 20px 0;
+      padding: 15px;
+      background-color: #e7f3ff;
+      border-left: 4px solid #007bff;
+    }
+    .label {
+      font-weight: bold;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Backend Server #{{ backend_index | default('Unknown') }}</h1>
+    <div class="info">
+      <p><span class="label">Hostname:</span> {{ inventory_hostname }}</p>
+      <p><span class="label">Private IP:</span> {{ ansible_default_ipv4.address | default(backend_private_ip) | default('unknown') }}</p>
+      <p><span class="label">Backend Index:</span> {{ backend_index | default('N/A') }}</p>
+      <p><span class="label">Timestamp:</span> {{ ansible_date_time.iso8601 }}</p>
+    </div>
+    <p>This response is served by backend server {{ backend_index | default('?') }}.</p>
+  </div>
+</body>
+</html>

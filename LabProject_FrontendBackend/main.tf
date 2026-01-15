@@ -1,0 +1,210 @@
+provider "aws" {
+  region = var.aws_region
+}
+
+# VPC
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr_block
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name = "${var.env_prefix}-vpc"
+  }
+}
+
+# Internet Gateway
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.env_prefix}-igw"
+  }
+}
+
+# Public Subnet
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.subnet_cidr_block
+  availability_zone       = var.availability_zone
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.env_prefix}-public-subnet"
+  }
+}
+
+# Route Table
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "${var.env_prefix}-public-rt"
+  }
+}
+
+# Route Table Association
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
+# Security Group
+resource "aws_security_group" "web_sg" {
+  name        = "${var.env_prefix}-web-sg"
+  description = "Security group for web servers"
+  vpc_id      = aws_vpc.main.id
+
+  # SSH from my IP only
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [local.my_ip]
+    description = "SSH from my IP"
+  }
+
+  # HTTP from anywhere
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTP from anywhere"
+  }
+
+  # Allow all traffic within VPC
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpc_cidr_block]
+    description = "All traffic within VPC"
+  }
+
+  # Outbound all
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound"
+  }
+
+  tags = {
+    Name = "${var.env_prefix}-web-sg"
+  }
+}
+
+# SSH Key Pair
+resource "aws_key_pair" "deployer" {
+  key_name   = "${var.env_prefix}-deployer-key"
+  public_key = file(var.ssh_public_key_path)
+}
+
+# Frontend EC2 Instance
+resource "aws_instance" "frontend" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+  key_name               = aws_key_pair.deployer.key_name
+
+  tags = {
+    Name = "${var.env_prefix}-frontend"
+    Role = "frontend"
+  }
+
+  provisioner "remote-exec" {
+    inline = ["echo 'SSH ready'"]
+
+    connection {
+      type        = "ssh"
+      user        = "ec2-user"
+      private_key = file(var.ssh_private_key_path)
+      host        = self.public_ip
+      timeout     = "5m"
+    }
+  }
+}
+
+# Backend EC2 Instances
+resource "aws_instance" "backend" {
+  count = 3
+
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+  key_name               = aws_key_pair.deployer.key_name
+
+  tags = {
+    Name  = "${var.env_prefix}-backend-${count.index}"
+    Role  = "backend"
+    Index = count.index
+  }
+
+  provisioner "remote-exec" {
+    inline = ["echo 'SSH ready'"]
+
+    connection {
+      type        = "ssh"
+      user        = "ec2-user"
+      private_key = file(var.ssh_private_key_path)
+      host        = self.public_ip
+      timeout     = "5m"
+    }
+  }
+}
+
+# Generate Ansible Inventory
+resource "local_file" "ansible_inventory" {
+  content = templatefile("${path.module}/inventory.tpl", {
+    frontend_ip         = aws_instance.frontend.public_ip
+    backend_ips         = aws_instance.backend[*].public_ip
+    backend_private_ips = aws_instance.backend[*].private_ip
+    ssh_user            = "ec2-user"
+    ssh_key_path        = var.ssh_private_key_path
+  })
+  filename = "${path.module}/generated_hosts.ini"
+
+  depends_on = [
+    aws_instance.frontend,
+    aws_instance.backend
+  ]
+}
+
+# Run Ansible Playbook
+resource "null_resource" "ansible_config" {
+  triggers = {
+    frontend_ip = aws_instance.frontend.public_ip
+    backend_ips = join(",", aws_instance.backend[*].public_ip)
+    always_run  = timestamp()
+  }
+
+  depends_on = [
+    local_file.ansible_inventory,
+    aws_instance.frontend,
+    aws_instance.backend
+  ]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo "Waiting 60 seconds for instances to fully initialize and install Python 3..."
+      sleep 60
+      
+      cd ansible
+      ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook \
+        -i ../generated_hosts.ini \
+        -e "backend1_private_ip=${aws_instance.backend[0].private_ip}" \
+        -e "backend2_private_ip=${aws_instance.backend[1].private_ip}" \
+        -e "backup_backend_private_ip=${aws_instance.backend[2].private_ip}" \
+        playbooks/site.yaml
+    EOT
+  }
+}
